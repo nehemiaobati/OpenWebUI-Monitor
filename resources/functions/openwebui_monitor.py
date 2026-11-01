@@ -21,7 +21,7 @@ logger.setLevel(logging.INFO)
 TRANSLATIONS = {
     "en": {
         "request_failed": "Request failed: {error_msg}",
-        "insufficient_balance": "Insufficient balance: Current balance `{balance:.4f}`",
+        "insufficient_balance": "Insufficient balance: Current balance `{balance:.4f}`. Top up at: {topup_url}",
         "cost": "Cost: ${cost:.4f}",
         "balance": "Balance: ${balance:.4f}",
         "tokens": "Tokens: {input}+{output}",
@@ -30,7 +30,7 @@ TRANSLATIONS = {
     },
     "zh": {
         "request_failed": "请求失败: {error_msg}",
-        "insufficient_balance": "余额不足: 当前余额 `{balance:.4f}`",
+        "insufficient_balance": "余额不足: 当前余额 `{balance:.4f}`. 充值地址: {topup_url}",
         "cost": "费用: ¥{cost:.4f}",
         "balance": "余额: ¥{balance:.4f}",
         "tokens": "Token: {input}+{output}",
@@ -39,7 +39,7 @@ TRANSLATIONS = {
     },
     "es": {
         "request_failed": "Solicitud fallida: {error_msg}",
-        "insufficient_balance": "Saldo insuficiente: Saldo actual `{balance:.4f}`",
+        "insufficient_balance": "Saldo insuficiente: Saldo actual `{balance:.4f}`. Recarga en: {topup_url}",
         "cost": "Costo: ${cost:.4f}",
         "balance": "Saldo: ${balance:.4f}",
         "tokens": "Tokens: {input}+{output}",
@@ -67,6 +67,9 @@ class Filter:
             default="", description="openwebui-monitor's base url"
         )
         api_key: str = Field(default="", description="openwebui-monitor's api key")
+        topup_url: str = Field(
+            default="", description="top-up URL (e.g. https://monitor.domain/topup)"
+        )
         priority: int = Field(default=5, description="filter priority")
         language: str = Field(default="zh", description="language (en/zh/es)")
         show_time_spent: bool = Field(default=True, description="show time spent")
@@ -131,7 +134,8 @@ class Filter:
 
             if is_outage:
                 current_balance = response_data.get("balance", 0)
-                msg = self.get_text("insufficient_balance", balance=current_balance)
+                topup_url = self.valves.topup_url or f"{self.valves.api_endpoint.rstrip('/')}/topup"
+                msg = self.get_text("insufficient_balance", balance=current_balance, topup_url=topup_url)
                 logger.info(msg)
                 raise CustomException(msg)
 
