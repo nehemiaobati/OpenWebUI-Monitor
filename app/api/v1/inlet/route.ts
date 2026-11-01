@@ -9,58 +9,64 @@ export async function POST(req: Request) {
         const user = await getOrCreateUser(data.user)
         const modelId = data.body?.model
 
+        // 1. Check account deletion
         if (user.deleted) {
-            return NextResponse.json({
-                success: true,
-                balance: -1,
-                message: 'Request successful',
-            })
+            return NextResponse.json(
+                { success: false, error: 'User account deactivated' },
+                { status: 403 }
+            )
+        }
+
+        const currentBalance = Number(user.balance)
+
+        // 2. Reject immediately if balance is depleted
+        if (currentBalance <= 0) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    balance: currentBalance,
+                    error: 'Insufficient balance. Please recharge your account.',
+                },
+                { status: 402 }
+            )
         }
 
         const inletCost = getModelInletCost(modelId)
 
+        // 3. Handle pre-deduction if configured
         if (inletCost > 0) {
-            const userResult = await query(
+            if (currentBalance < inletCost) {
+                return NextResponse.json(
+                    {
+                        success: false,
+                        balance: currentBalance,
+                        error: 'Insufficient balance for model initialization.',
+                    },
+                    { status: 402 }
+                )
+            }
+
+            const updated = await query(
                 `UPDATE users 
-         SET balance = LEAST(
-           balance - CAST($1 AS DECIMAL(16,4)),
-           999999.9999
-         )
-         WHERE id = $2 AND NOT deleted
-         RETURNING balance`,
+                 SET balance = balance - CAST($1 AS DECIMAL(16,4))
+                 WHERE id = $2 AND NOT deleted
+                 RETURNING balance`,
                 [inletCost, user.id]
             )
 
-            if (userResult.rows.length === 0) {
-                throw new Error('Failed to update user balance')
-            }
-
             return NextResponse.json({
                 success: true,
-                balance: Number(userResult.rows[0].balance),
+                balance: Number(updated.rows[0].balance),
                 inlet_cost: inletCost,
-                message: 'Request successful',
             })
         }
 
         return NextResponse.json({
             success: true,
-            balance: Number(user.balance),
-            message: 'Request successful',
+            balance: currentBalance,
         })
     } catch (error) {
-        console.error('Inlet error:', error)
-        return NextResponse.json(
-            {
-                success: false,
-                error:
-                    error instanceof Error
-                        ? error.message
-                        : 'Error dealing with request',
-                error_type:
-                    error instanceof Error ? error.name : 'UNKNOWN_ERROR',
-            },
-            { status: 500 }
-        )
+        const message = error instanceof Error ? error.message : 'Inlet processing error'
+        return NextResponse.json({ success: false, error: message }, { status: 500 })
     }
 }
