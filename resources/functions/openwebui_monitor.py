@@ -2,18 +2,18 @@
 title: Usage Monitor
 author: VariantConst & OVINC CN
 git_url: https://github.com/VariantConst/OpenWebUI-Monitor.git
-version: 0.3.6
+version: 0.3.7
+required_open_webui_version: 0.12.5
 requirements: httpx
 license: MIT
 """
 
+import json
 import logging
 import time
-from typing import Dict, Optional
-from httpx import AsyncClient
+from typing import Any, Callable, Dict, Optional
+from httpx import AsyncClient, Timeout
 from pydantic import BaseModel, Field
-import json
-
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -53,6 +53,14 @@ class CustomException(Exception):
     pass
 
 
+def _serialize_for_json(obj: Any) -> Any:
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    if hasattr(obj, "dict"):
+        return obj.dict()
+    return str(obj)
+
+
 class Filter:
     class Valves(BaseModel):
         api_endpoint: str = Field(
@@ -73,32 +81,30 @@ class Filter:
         self.type = "filter"
         self.name = "OpenWebUI Monitor"
         self.valves = self.Valves()
-        self.outage_map: Dict[str, bool] = {}
-        self.start_time: Optional[float] = None
 
     def get_text(self, key: str, **kwargs) -> str:
         lang = self.valves.language if self.valves.language in TRANSLATIONS else "en"
         text = TRANSLATIONS[lang].get(key, TRANSLATIONS["en"][key])
         return text.format(**kwargs) if kwargs else text
 
-    async def request(
-        self, client: AsyncClient, url: str, headers: dict, json_data: dict
-    ):
-        json_data = json.loads(
-            json.dumps(
-                json_data, default=lambda o: o.dict() if hasattr(o, "dict") else str(o)
-            )
+    async def _post_monitor(self, endpoint: str, payload: dict) -> dict:
+        serialized_payload = json.loads(
+            json.dumps(payload, default=_serialize_for_json)
         )
-
-        response = await client.post(url=url, headers=headers, json=json_data)
-        response.raise_for_status()
-        response_data = response.json()
-        if not response_data.get("success"):
-            logger.error(self.get_text("request_failed", error_msg=response_data))
-            raise CustomException(
-                self.get_text("request_failed", error_msg=response_data)
+        async with AsyncClient(timeout=Timeout(30.0)) as client:
+            response = await client.post(
+                url=f"{self.valves.api_endpoint}{endpoint}",
+                headers={"Authorization": f"Bearer {self.valves.api_key}"},
+                json=serialized_payload,
             )
-        return response_data
+            response.raise_for_status()
+            data = response.json()
+            if not data.get("success"):
+                error_desc = data.get("error", data)
+                raise CustomException(
+                    self.get_text("request_failed", error_msg=error_desc)
+                )
+            return data
 
     async def inlet(
         self,
@@ -106,32 +112,29 @@ class Filter:
         __metadata__: Optional[dict] = None,
         __user__: Optional[dict] = None,
     ) -> dict:
-        __user__ = __user__ or {}
-        __metadata__ = __metadata__ or {}
-        self.start_time = time.time()
-        user_id = __user__.get("id", "default")
+        user_dict = __user__ or {}
+        user_id = user_dict.get("id", "default")
+        start_time = time.monotonic()
 
-        client = AsyncClient()
+        if __metadata__ is not None:
+            __metadata__["_usage_monitor_start_time"] = start_time
 
         try:
-            response_data = await self.request(
-                client=client,
-                url=f"{self.valves.api_endpoint}/api/v1/inlet",
-                headers={"Authorization": f"Bearer {self.valves.api_key}"},
-                json_data={"user": __user__, "body": body},
+            response_data = await self._post_monitor(
+                endpoint="/api/v1/inlet",
+                payload={"user": user_dict, "body": body},
             )
-            self.outage_map[user_id] = response_data.get("balance", 0) <= 0
-            if self.outage_map[user_id]:
-                logger.info(
-                    self.get_text(
-                        "insufficient_balance", balance=response_data.get("balance", 0)
-                    )
-                )
-                raise CustomException(
-                    self.get_text(
-                        "insufficient_balance", balance=response_data.get("balance", 0)
-                    )
-                )
+
+            is_outage = response_data.get("balance", 0) <= 0
+            if __metadata__ is not None:
+                __metadata__["_usage_monitor_outage"] = is_outage
+
+            if is_outage:
+                current_balance = response_data.get("balance", 0)
+                msg = self.get_text("insufficient_balance", balance=current_balance)
+                logger.info(msg)
+                raise CustomException(msg)
+
             return body
 
         except Exception as err:
@@ -140,31 +143,24 @@ class Filter:
                 raise err
             raise Exception(f"error calculating usage, {err}") from err
 
-        finally:
-            await client.aclose()
-
     async def outlet(
         self,
         body: dict,
         __metadata__: Optional[dict] = None,
         __user__: Optional[dict] = None,
-        __event_emitter__: Optional[callable] = None,
+        __event_emitter__: Optional[Callable] = None,
     ) -> dict:
-        __user__ = __user__ or {}
-        __metadata__ = __metadata__ or {}
-        user_id = __user__.get("id", "default")
+        user_dict = __user__ or {}
+        user_id = user_dict.get("id", "default")
 
-        if self.outage_map.get(user_id, False):
+        is_outage = bool(__metadata__.get("_usage_monitor_outage", False)) if __metadata__ is not None else False
+        if is_outage:
             return body
 
-        client = AsyncClient()
-
         try:
-            response_data = await self.request(
-                client=client,
-                url=f"{self.valves.api_endpoint}/api/v1/outlet",
-                headers={"Authorization": f"Bearer {self.valves.api_key}"},
-                json_data={"user": __user__, "body": body},
+            response_data = await self._post_monitor(
+                endpoint="/api/v1/outlet",
+                payload={"user": user_dict, "body": body},
             )
 
             stats_list = []
@@ -172,25 +168,29 @@ class Filter:
                 stats_list.append(
                     self.get_text(
                         "tokens",
-                        input=response_data["inputTokens"],
-                        output=response_data["outputTokens"],
+                        input=response_data.get("inputTokens", 0),
+                        output=response_data.get("outputTokens", 0),
                     )
                 )
             if self.valves.show_cost:
                 stats_list.append(
-                    self.get_text("cost", cost=response_data["totalCost"])
+                    self.get_text("cost", cost=response_data.get("totalCost", 0))
                 )
             if self.valves.show_balance:
                 stats_list.append(
-                    self.get_text("balance", balance=response_data["newBalance"])
+                    self.get_text("balance", balance=response_data.get("newBalance", 0))
                 )
-            if self.start_time and self.valves.show_time_spent:
-                elapsed = time.time() - self.start_time
+
+            start_time = None
+            if __metadata__ is not None:
+                start_time = __metadata__.get("_usage_monitor_start_time")
+
+            if start_time is not None and self.valves.show_time_spent:
+                elapsed = time.monotonic() - start_time
                 stats_list.append(self.get_text("time_spent", time=elapsed))
                 if self.valves.show_tokens_per_sec:
-                    tokens_per_sec = (
-                        response_data["outputTokens"] / elapsed if elapsed > 0 else 0
-                    )
+                    output_tokens = response_data.get("outputTokens", 0)
+                    tokens_per_sec = output_tokens / elapsed if elapsed > 0 else 0
                     stats_list.append(
                         self.get_text("tokens_per_sec", tokens_per_sec=tokens_per_sec)
                     )
@@ -206,6 +206,4 @@ class Filter:
 
         except Exception as err:
             logger.exception(self.get_text("request_failed", error_msg=err))
-            raise Exception(self.get_text("request_failed", error_msg=err))
-        finally:
-            await client.aclose()
+            raise Exception(self.get_text("request_failed", error_msg=err)) from err
