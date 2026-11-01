@@ -17,11 +17,11 @@ RUN apk add --no-cache \
 # 全局安装 pnpm
 RUN npm install -g pnpm --registry=https://registry.npmmirror.com
 
-# 复制 package.json 和 pnpm-lock.yaml
-COPY package.json pnpm-lock.yaml ./
+# 复制 package.json, pnpm-lock.yaml 以及工作区配置文件
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml* ./
 
-# 安装依赖
-RUN pnpm install --no-frozen-lockfile --registry=https://registry.npmmirror.com
+# 使用环境变量注入修复 ERR_PNPM_IGNORED_BUILDS 报错
+RUN only_built_dependencies=none pnpm install --no-frozen-lockfile --registry=https://registry.npmmirror.com
 
 # 复制项目文件
 COPY . .
