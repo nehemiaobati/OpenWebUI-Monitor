@@ -3,7 +3,7 @@ import { encode } from 'gpt-tokenizer/model/gpt-4'
 import { pool } from '@/lib/db/client'
 import { getModelInletCost } from '@/lib/utils/inlet-cost'
 
-interface ModelPrice {
+interface ModelPricing {
     id: string
     name: string
     input_price: number
@@ -11,17 +11,51 @@ interface ModelPrice {
     per_msg_price: number
 }
 
-function calculateCost(
+interface MessagePayload {
+    content?: string
+    usage?: {
+        prompt_tokens?: number
+        completion_tokens?: number
+    }
+}
+
+function calculateModelCost(
     inputTokens: number,
     outputTokens: number,
-    modelPrice: ModelPrice
+    pricing: ModelPricing
 ): number {
     if (outputTokens === 0) return 0
-    if (modelPrice.per_msg_price >= 0) return Number(modelPrice.per_msg_price)
+    if (pricing.per_msg_price >= 0) return Number(pricing.per_msg_price)
 
-    const inputCost = (inputTokens / 1_000_000) * modelPrice.input_price
-    const outputCost = (outputTokens / 1_000_000) * modelPrice.output_price
+    const inputCost = (inputTokens / 1_000_000) * pricing.input_price
+    const outputCost = (outputTokens / 1_000_000) * pricing.output_price
     return inputCost + outputCost
+}
+
+function resolveTokens(messages: MessagePayload[]): {
+    inputTokens: number
+    outputTokens: number
+} {
+    const lastMessage = messages[messages.length - 1] || { content: '' }
+
+    if (
+        typeof lastMessage.usage?.prompt_tokens === 'number' &&
+        typeof lastMessage.usage?.completion_tokens === 'number'
+    ) {
+        return {
+            inputTokens: lastMessage.usage.prompt_tokens,
+            outputTokens: lastMessage.usage.completion_tokens,
+        }
+    }
+
+    const outputTokens = encode(lastMessage.content || '').length
+    const totalTokens = messages.reduce(
+        (sum, msg) => sum + encode(msg.content || '').length,
+        0
+    )
+    const inputTokens = Math.max(0, totalTokens - outputTokens)
+
+    return { inputTokens, outputTokens }
 }
 
 export async function POST(req: Request) {
@@ -35,51 +69,54 @@ export async function POST(req: Request) {
 
         if (!userId || !modelId) {
             return NextResponse.json(
-                { success: false, error: 'Missing required user or model ID' },
+                {
+                    success: false,
+                    error: 'Missing required user or model identifier',
+                    error_type: 'INVALID_PARAMETERS',
+                },
                 { status: 400 }
             )
         }
 
-        // 1. Fetch Model Pricing (Read before starting transaction to minimize lock time)
+        // 1. Fetch Model Pricing
         const priceRes = await client.query(
             `SELECT id, name, input_price, output_price, per_msg_price 
              FROM model_prices WHERE id = $1`,
             [modelId]
         )
 
-        const defaultPrice = parseFloat(process.env.DEFAULT_MODEL_INPUT_PRICE || '60')
-        const modelPrice: ModelPrice = priceRes.rows[0] || {
-            id: modelId,
-            name: modelId,
-            input_price: defaultPrice,
-            output_price: parseFloat(process.env.DEFAULT_MODEL_OUTPUT_PRICE || '60'),
-            per_msg_price: -1,
-        }
+        const defaultInputPrice = parseFloat(
+            process.env.DEFAULT_MODEL_INPUT_PRICE || '60'
+        )
+        const defaultOutputPrice = parseFloat(
+            process.env.DEFAULT_MODEL_OUTPUT_PRICE || '60'
+        )
 
-        // 2. Token Calculation
-        const messages = data.body.messages || []
-        const lastMessage = messages[messages.length - 1] || { content: '' }
+        const pricing: ModelPricing = priceRes.rows[0]
+            ? {
+                  id: priceRes.rows[0].id,
+                  name: priceRes.rows[0].name || priceRes.rows[0].model_name,
+                  input_price: Number(priceRes.rows[0].input_price),
+                  output_price: Number(priceRes.rows[0].output_price),
+                  per_msg_price: Number(priceRes.rows[0].per_msg_price),
+              }
+            : {
+                  id: modelId,
+                  name: modelId,
+                  input_price: defaultInputPrice,
+                  output_price: defaultOutputPrice,
+                  per_msg_price: -1,
+              }
 
-        let inputTokens: number
-        let outputTokens: number
+        // 2. Token and Cost Calculations
+        const messages: MessagePayload[] = data.body?.messages || []
+        const { inputTokens, outputTokens } = resolveTokens(messages)
 
-        if (lastMessage.usage?.prompt_tokens && lastMessage.usage?.completion_tokens) {
-            inputTokens = lastMessage.usage.prompt_tokens
-            outputTokens = lastMessage.usage.completion_tokens
-        } else {
-            outputTokens = encode(lastMessage.content || '').length
-            const totalTokens = messages.reduce(
-                (sum: number, msg: { content: string }) => sum + encode(msg.content || '').length,
-                0
-            )
-            inputTokens = Math.max(0, totalTokens - outputTokens)
-        }
-
-        const totalCost = calculateCost(inputTokens, outputTokens, modelPrice)
+        const totalCost = calculateModelCost(inputTokens, outputTokens, pricing)
         const inletCost = getModelInletCost(modelId)
         const actualCost = Math.max(0, totalCost - inletCost)
 
-        // 3. Atomic Database Operations on the Single Client Connection
+        // 3. Atomic Database Operations within Transaction
         await client.query('BEGIN')
 
         const userUpdateRes = await client.query(
@@ -91,7 +128,15 @@ export async function POST(req: Request) {
         )
 
         if (userUpdateRes.rows.length === 0) {
-            throw new Error('User not found or account is deactivated')
+            await client.query('ROLLBACK')
+            return NextResponse.json(
+                {
+                    success: false,
+                    error: 'User not found or account is deactivated',
+                    error_type: 'USER_NOT_FOUND',
+                },
+                { status: 404 }
+            )
         }
 
         const newBalance = Number(userUpdateRes.rows[0].balance)
@@ -102,7 +147,15 @@ export async function POST(req: Request) {
                 input_tokens, output_tokens, 
                 cost, balance_after
             ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-            [userId, userName, modelId, inputTokens, outputTokens, totalCost, newBalance]
+            [
+                userId,
+                userName,
+                modelId,
+                inputTokens,
+                outputTokens,
+                totalCost,
+                newBalance,
+            ]
         )
 
         await client.query('COMMIT')
@@ -116,8 +169,16 @@ export async function POST(req: Request) {
         })
     } catch (error) {
         await client.query('ROLLBACK')
-        const message = error instanceof Error ? error.message : 'Processing error'
-        return NextResponse.json({ success: false, error: message }, { status: 500 })
+        const message =
+            error instanceof Error ? error.message : 'Processing error'
+        return NextResponse.json(
+            {
+                success: false,
+                error: message,
+                error_type: 'INTERNAL_SERVER_ERROR',
+            },
+            { status: 500 }
+        )
     } finally {
         client.release()
     }

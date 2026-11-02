@@ -23,9 +23,10 @@ A monitoring dashboard for OpenWebUI that tracks usage and manages user balances
 
 ## Deployment
 
-Supports one-click deployment on Vercel [![Deploy on Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FVariantConst%2FOpenWebUI-Monitor&project-name=openwebui-monitor&repository-name=openwebui-monitor&env=OPENWEBUI_DOMAIN,OPENWEBUI_API_KEY,ACCESS_TOKEN,API_KEY) and Docker deployment. 
+Supports one-click deployment on Vercel [![Deploy on Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FVariantConst%2FOpenWebUI-Monitor&project-name=openwebui-monitor&repository-name=openwebui-monitor&env=OPENWEBUI_DOMAIN,OPENWEBUI_API_KEY,ACCESS_TOKEN,API_KEY) and Docker deployment.
 
 In `docker-compose.yml`, you can choose between building locally from source or using a prebuilt image:
+
 - **Local Build (`build: .`)**: Builds the image from your local repository files using `docker compose up -d --build`.
 - **Prebuilt Image (`image: docker.io/variantconst/openwebui-monitor:latest`)**: Pulls and runs the official prebuilt image.
 
@@ -74,13 +75,13 @@ sudo docker compose up -d
 OpenWebUI Monitor includes built-in endpoints for handling user top-ups via Paystack:
 
 1. **`POST /api/v1/billing/paystack`**
-   - **Description**: Initializes a Paystack checkout session and returns an `authorization_url`.
-   - **Authentication**: Requires `Authorization: Bearer <ACCESS_TOKEN>` header.
-   - **Request Body**: `{ "email": "user@example.com", "amount": 10.00, "userId": "user-uuid" }`
+    - **Description**: Initializes a Paystack checkout session and returns an `authorization_url`.
+    - **Authentication**: Requires `Authorization: Bearer <ACCESS_TOKEN>` or `<API_KEY>` header.
+    - **Request Body**: `{ "email": "user@example.com", "amount": 10.00, "userId": "user-uuid" }`
 
 2. **`POST /api/v1/billing/webhook`**
-   - **Description**: Receives payment completion notifications from Paystack and automatically increments the user's balance in PostgreSQL upon success.
-   - **Authentication**: Verified via Paystack's HMAC SHA-512 signature in the `x-paystack-signature` header using `PAYSTACK_SECRET_KEY`.
+    - **Description**: Receives payment completion notifications from Paystack and automatically increments the user's balance in PostgreSQL upon success.
+    - **Authentication**: Verified via Paystack's HMAC SHA-512 signature in the `x-paystack-signature` header using `PAYSTACK_SECRET_KEY`.
 
 ## FAQ
 

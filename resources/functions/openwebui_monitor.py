@@ -1,8 +1,9 @@
-"""title: Usage Monitor
+"""
+title: Usage Monitor
 author: VariantConst & OVINC CN
 git_url: https://github.com/VariantConst/OpenWebUI-Monitor.git
-version: 0.3.8
-required_open_webui_version: 0.12.5
+version: 0.3.9
+required_open_webui_version: 0.4.0
 requirements: httpx
 license: MIT
 """
@@ -18,7 +19,7 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-TRANSLATIONS = {
+TRANSLATIONS: Dict[str, Dict[str, str]] = {
     "en": {
         "request_failed": "Request failed: {error_msg}",
         "insufficient_balance": "Insufficient balance: Current balance `{balance:.4f}`. Top up at: {topup_url}",
@@ -27,6 +28,7 @@ TRANSLATIONS = {
         "tokens": "Tokens: {input}+{output}",
         "time_spent": "Time: {time:.2f}s",
         "tokens_per_sec": "{tokens_per_sec:.2f} T/s",
+        "endpoint_not_configured": "OpenWebUI Monitor API endpoint is not configured in Valves.",
     },
     "zh": {
         "request_failed": "请求失败: {error_msg}",
@@ -36,6 +38,7 @@ TRANSLATIONS = {
         "tokens": "Token: {input}+{output}",
         "time_spent": "耗时: {time:.2f}s",
         "tokens_per_sec": "{tokens_per_sec:.2f} T/s",
+        "endpoint_not_configured": "OpenWebUI Monitor 插件未配置 API Endpoint。",
     },
     "es": {
         "request_failed": "Solicitud fallida: {error_msg}",
@@ -45,6 +48,7 @@ TRANSLATIONS = {
         "tokens": "Tokens: {input}+{output}",
         "time_spent": "Tiempo: {time:.2f}s",
         "tokens_per_sec": "{tokens_per_sec:.2f} T/s",
+        "endpoint_not_configured": "El endpoint de OpenWebUI Monitor no está configurado en Valves.",
     },
 }
 
@@ -58,27 +62,57 @@ def _serialize_for_json(obj: Any) -> Any:
         return obj.model_dump()
     if hasattr(obj, "dict"):
         return obj.dict()
+    if hasattr(obj, "isoformat"):
+        return obj.isoformat()
     return str(obj)
 
 
 class Filter:
     class Valves(BaseModel):
         api_endpoint: str = Field(
-            default="", description="openwebui-monitor's base url (e.g. http://172.206.241.153:7878)"
+            default="",
+            description="OpenWebUI Monitor base URL (e.g. http://127.0.0.1:3000)",
         )
-        api_key: str = Field(default="", description="openwebui-monitor's api key")
+        api_key: str = Field(
+            default="",
+            description="OpenWebUI Monitor API Key",
+        )
+        topup_url: str = Field(
+            default="",
+            description="Custom top-up URL. If left empty, a Paystack checkout session is dynamically generated.",
+        )
         topup_amount: float = Field(
-            default=10.0, description="Default recharge amount to initialize on Paystack"
+            default=10.0,
+            description="Default recharge amount to initialize on Paystack",
         )
-        priority: int = Field(default=5, description="filter priority")
-        language: str = Field(default="en", description="language (en/zh/es)")
-        show_time_spent: bool = Field(default=True, description="show time spent")
+        priority: int = Field(
+            default=5,
+            description="Filter priority",
+        )
+        language: str = Field(
+            default="en",
+            description="Language code (en/zh/es)",
+        )
+        show_time_spent: bool = Field(
+            default=True,
+            description="Show request duration",
+        )
         show_tokens_per_sec: bool = Field(
-            default=True, description="show tokens per second"
+            default=True,
+            description="Show generation speed (tokens per second)",
         )
-        show_cost: bool = Field(default=True, description="show cost")
-        show_balance: bool = Field(default=True, description="show balance")
-        show_tokens: bool = Field(default=True, description="show tokens")
+        show_cost: bool = Field(
+            default=True,
+            description="Show request cost",
+        )
+        show_balance: bool = Field(
+            default=True,
+            description="Show remaining account balance",
+        )
+        show_tokens: bool = Field(
+            default=True,
+            description="Show token breakdown (input + output)",
+        )
 
     def __init__(self):
         self.type = "filter"
@@ -87,53 +121,57 @@ class Filter:
 
     def get_text(self, key: str, **kwargs) -> str:
         lang = self.valves.language if self.valves.language in TRANSLATIONS else "en"
-        text = TRANSLATIONS[lang].get(key, TRANSLATIONS["en"][key])
+        text = TRANSLATIONS[lang].get(key, TRANSLATIONS["en"].get(key, key))
         return text.format(**kwargs) if kwargs else text
 
-    async def _get_paystack_authorization_url(
+    async def _resolve_topup_url(
         self, client: AsyncClient, user_dict: dict
     ) -> str:
+        if self.valves.topup_url:
+            return self.valves.topup_url.strip()
+
+        base_url = self.valves.api_endpoint.rstrip("/")
         user_id = user_dict.get("id")
         if not user_id:
-            raise CustomException("User ID is missing; cannot initialize payment.")
+            return f"{base_url}/panel"
+
         email = user_dict.get("email") or f"{user_id}@openwebui.local"
-        base_url = self.valves.api_endpoint.rstrip("/")
         payload = {
             "email": email,
             "amount": self.valves.topup_amount,
             "userId": user_id,
             "callback_url": f"{base_url}/api/v1/billing/webhook",
         }
-        response = await client.post(
-            url=f"{base_url}/api/v1/billing/paystack",
-            headers={
-                "Authorization": f"Bearer {self.valves.api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
+
         try:
+            response = await client.post(
+                url=f"{base_url}/api/v1/billing/paystack",
+                headers={
+                    "Authorization": f"Bearer {self.valves.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
             data = response.json()
+            if response.is_success and data.get("success"):
+                auth_url = data.get("data", {}).get("authorization_url")
+                if auth_url:
+                    return auth_url
         except Exception as exc:
-            raise CustomException(
-                f"Billing service returned unparseable response (HTTP {response.status_code})"
-            ) from exc
+            logger.warning("Dynamic payment session generation failed: %s", exc)
 
-        if not response.is_success or not data.get("success"):
-            error_msg = data.get("error", f"HTTP {response.status_code}")
-            raise CustomException(f"Failed to generate top-up link: {error_msg}")
-
-        auth_url = data.get("data", {}).get("authorization_url")
-        if not auth_url:
-            raise CustomException("Paystack authorization URL missing from billing response.")
-        return auth_url
+        return f"{base_url}/panel"
 
     async def inlet(
         self,
         body: dict,
         __metadata__: Optional[dict] = None,
         __user__: Optional[dict] = None,
+        __event_emitter__: Optional[Callable] = None,
     ) -> dict:
+        if not self.valves.api_endpoint:
+            raise CustomException(self.get_text("endpoint_not_configured"))
+
         user_dict = __user__ or {}
         start_time = time.monotonic()
         if __metadata__ is not None:
@@ -169,13 +207,11 @@ class Filter:
                     __metadata__["_usage_monitor_outage"] = is_outage
 
                 if is_outage:
-                    auth_url = await self._get_paystack_authorization_url(
-                        client, user_dict
-                    )
+                    topup_link = await self._resolve_topup_url(client, user_dict)
                     msg = self.get_text(
                         "insufficient_balance",
                         balance=current_balance,
-                        topup_url=auth_url,
+                        topup_url=topup_link,
                     )
                     logger.info(msg)
                     raise CustomException(msg)
@@ -195,6 +231,9 @@ class Filter:
         __user__: Optional[dict] = None,
         __event_emitter__: Optional[Callable] = None,
     ) -> dict:
+        if not self.valves.api_endpoint:
+            return body
+
         user_dict = __user__ or {}
         user_id = user_dict.get("id", "default")
 

@@ -1,50 +1,71 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
-const API_KEY = process.env.API_KEY
-const ACCESS_TOKEN = process.env.ACCESS_TOKEN
-
 export async function middleware(request: NextRequest) {
     const { pathname } = request.nextUrl
+    const apiKey = process.env.API_KEY
+    const accessToken = process.env.ACCESS_TOKEN
 
+    // Public API routes
     if (
-        pathname.startsWith('/api/v1/inlet') ||
-        pathname.startsWith('/api/v1/outlet') ||
-        pathname.startsWith('/api/v1/models') ||
-        pathname.startsWith('/api/v1/panel') ||
-        pathname.startsWith('/api/v1/config') ||
-        pathname.startsWith('/api/v1/users')
+        pathname.startsWith('/api/init') ||
+        pathname.startsWith('/api/config/key') ||
+        pathname.startsWith('/api/v1/billing')
     ) {
-        const token =
+        return NextResponse.next()
+    }
+
+    // Protected API v1 endpoints
+    if (pathname.startsWith('/api/v1/')) {
+        const requiresAccessToken =
             pathname.startsWith('/api/v1/panel') ||
             pathname.startsWith('/api/v1/config') ||
             pathname.startsWith('/api/v1/users') ||
             pathname.startsWith('/api/v1/models')
-                ? ACCESS_TOKEN
-                : API_KEY
 
-        if (!token) {
-            console.error('API Key or Access Token is not set')
+        const expectedToken = requiresAccessToken ? accessToken : apiKey
+
+        if (!expectedToken) {
+            console.error(
+                'Authentication token is not configured on the server'
+            )
             return NextResponse.json(
-                { error: 'Server configuration error' },
+                {
+                    success: false,
+                    error: 'Server configuration error',
+                    error_type: 'CONFIG_ERROR',
+                },
                 { status: 500 }
             )
         }
 
         const authHeader = request.headers.get('authorization')
-        const providedKey = authHeader?.replace('Bearer ', '')
+        const providedKey = authHeader?.replace(/^Bearer\s+/i, '').trim()
 
-        if (!providedKey || providedKey !== token) {
-            console.log('Invalid API key or token')
-            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+        if (!providedKey || providedKey !== expectedToken) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    error: 'Unauthorized',
+                    error_type: 'UNAUTHORIZED',
+                },
+                { status: 401 }
+            )
         }
 
         return NextResponse.next()
-    } else if (!pathname.startsWith('/api/')) {
-        if (!ACCESS_TOKEN) {
+    }
+
+    // Dashboard UI pages
+    if (!pathname.startsWith('/api/')) {
+        if (!accessToken) {
             console.error('ACCESS_TOKEN is not set')
             return NextResponse.json(
-                { error: 'Server configuration error' },
+                {
+                    success: false,
+                    error: 'Server configuration error',
+                    error_type: 'CONFIG_ERROR',
+                },
                 { status: 500 }
             )
         }
@@ -60,12 +81,7 @@ export async function middleware(request: NextRequest) {
         )
         response.headers.set('Pragma', 'no-cache')
         response.headers.set('Expires', '0')
-
         return response
-    } else if (pathname.startsWith('/api/config/key')) {
-        return NextResponse.next()
-    } else if (pathname.startsWith('/api/init')) {
-        return NextResponse.next()
     }
 
     return NextResponse.next()

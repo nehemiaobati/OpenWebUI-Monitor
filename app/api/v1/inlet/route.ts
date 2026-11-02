@@ -6,26 +6,43 @@ import { getModelInletCost } from '@/lib/utils/inlet-cost'
 export async function POST(req: Request) {
     try {
         const data = await req.json()
+
+        if (!data?.user?.id) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    error: 'User information with valid ID is required',
+                    error_type: 'INVALID_REQUEST',
+                },
+                { status: 400 }
+            )
+        }
+
         const user = await getOrCreateUser(data.user)
         const modelId = data.body?.model
 
-        // 1. Check account deletion
+        // 1. Account status check
         if (user.deleted) {
             return NextResponse.json(
-                { success: false, error: 'User account deactivated' },
+                {
+                    success: false,
+                    error: 'User account deactivated',
+                    error_type: 'ACCOUNT_DEACTIVATED',
+                },
                 { status: 403 }
             )
         }
 
         const currentBalance = Number(user.balance)
 
-        // 2. Reject immediately if balance is depleted
+        // 2. Reject immediately if balance is non-positive
         if (currentBalance <= 0) {
             return NextResponse.json(
                 {
                     success: false,
                     balance: currentBalance,
                     error: 'Insufficient balance. Please recharge your account.',
+                    error_type: 'INSUFFICIENT_BALANCE',
                 },
                 { status: 402 }
             )
@@ -33,7 +50,7 @@ export async function POST(req: Request) {
 
         const inletCost = getModelInletCost(modelId)
 
-        // 3. Handle pre-deduction if configured
+        // 3. Pre-deduct initialization cost if model has an inlet surcharge
         if (inletCost > 0) {
             if (currentBalance < inletCost) {
                 return NextResponse.json(
@@ -41,6 +58,7 @@ export async function POST(req: Request) {
                         success: false,
                         balance: currentBalance,
                         error: 'Insufficient balance for model initialization.',
+                        error_type: 'INSUFFICIENT_BALANCE',
                     },
                     { status: 402 }
                 )
@@ -54,6 +72,17 @@ export async function POST(req: Request) {
                 [inletCost, user.id]
             )
 
+            if (updated.rows.length === 0) {
+                return NextResponse.json(
+                    {
+                        success: false,
+                        error: 'User not found or account deactivated',
+                        error_type: 'USER_NOT_FOUND',
+                    },
+                    { status: 404 }
+                )
+            }
+
             return NextResponse.json({
                 success: true,
                 balance: Number(updated.rows[0].balance),
@@ -66,7 +95,15 @@ export async function POST(req: Request) {
             balance: currentBalance,
         })
     } catch (error) {
-        const message = error instanceof Error ? error.message : 'Inlet processing error'
-        return NextResponse.json({ success: false, error: message }, { status: 500 })
+        const message =
+            error instanceof Error ? error.message : 'Inlet processing error'
+        return NextResponse.json(
+            {
+                success: false,
+                error: message,
+                error_type: 'INTERNAL_SERVER_ERROR',
+            },
+            { status: 500 }
+        )
     }
 }
