@@ -74,9 +74,9 @@ class Action:
         stats_array = []
 
         if self.valves.show_cost and "total_cost" in stats_data:
-            stats_array.append(f"Cost: ${stats_data['total_cost']:.6f}")
+            stats_array.append(f"Cost: ${float(stats_data['total_cost']):.4f}")
         if self.valves.show_balance and "new_balance" in stats_data:
-            stats_array.append(f"Balance: ${stats_data['new_balance']:.6f}")
+            stats_array.append(f"Balance: ${float(stats_data['new_balance']):.4f}")
         if (
             self.valves.show_tokens
             and "input_tokens" in stats_data
