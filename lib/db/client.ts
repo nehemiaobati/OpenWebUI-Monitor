@@ -271,6 +271,28 @@ export async function ensureTablesExist() {
       `)
         }
 
+        const paymentTransactionsTableExists = await query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_name = 'payment_transactions'
+      );
+    `)
+
+        if (!paymentTransactionsTableExists.rows[0].exists) {
+            await query(`
+        CREATE TABLE IF NOT EXISTS payment_transactions (
+          reference VARCHAR(255) PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          amount DECIMAL(16, 4) NOT NULL,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+      `)
+            await query(`
+        CREATE INDEX IF NOT EXISTS payment_transactions_user_id_idx ON payment_transactions(user_id);
+      `)
+        }
+
         console.log('Database tables initialized successfully')
     } catch (error) {
         console.error('Failed to initialize database tables:', error)

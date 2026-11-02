@@ -152,28 +152,4 @@ export async function GET(req: Request) {
     }
 }
 
-export async function POST(req: Request) {
-    const authError = verifyApiToken(req)
-    if (authError) {
-        return authError
-    }
 
-    const data = await req.json()
-
-    return new Response('Inlet placeholder response', {
-        headers: { 'Content-Type': 'application/json' },
-    })
-}
-
-export async function PUT(req: Request) {
-    const authError = verifyApiToken(req)
-    if (authError) {
-        return authError
-    }
-
-    const data = await req.json()
-
-    return new Response('Outlet placeholder response', {
-        headers: { 'Content-Type': 'application/json' },
-    })
-}

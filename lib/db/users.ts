@@ -68,21 +68,28 @@ export async function ensureUserTableExists() {
     }
 }
 
-export async function getOrCreateUser(userData: any) {
+export async function getOrCreateUser(userData: {
+    id: string
+    email?: string | null
+    name?: string | null
+    role?: string | null
+}) {
+    if (!userData?.id) {
+        throw new Error('User ID is required')
+    }
+
+    const email = userData.email || `${userData.id}@openwebui.local`
+    const name = userData.name || userData.email || userData.id
+    const role = userData.role || 'user'
+    const initBalance = parseFloat(process.env.INIT_BALANCE || '0')
+
     const result = await query(
-        `
-    INSERT INTO users (id, email, name, role, balance)
-      VALUES ($1, $2, $3, $4, $5)
-      ON CONFLICT (id) DO UPDATE
-      SET email = $2, name = $3
-      RETURNING *`,
-        [
-            userData.id,
-            userData.email,
-            userData.name,
-            userData.role || 'user',
-            process.env.INIT_BALANCE || '0',
-        ]
+        `INSERT INTO users (id, email, name, role, balance)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (id) DO UPDATE
+         SET email = EXCLUDED.email, name = EXCLUDED.name
+         RETURNING *`,
+        [userData.id, email, name, role, initBalance]
     )
 
     return result.rows[0]

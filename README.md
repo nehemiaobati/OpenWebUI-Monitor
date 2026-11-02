@@ -23,7 +23,13 @@ A monitoring dashboard for OpenWebUI that tracks usage and manages user balances
 
 ## Deployment
 
-Supports one-click deployment on Vercel [![Deploy on Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FVariantConst%2FOpenWebUI-Monitor&project-name=openwebui-monitor&repository-name=openwebui-monitor&env=OPENWEBUI_DOMAIN,OPENWEBUI_API_KEY,ACCESS_TOKEN,API_KEY) and Docker deployment. **See [Deployment Guide](https://github.com/VariantConst/OpenWebUI-Monitor/blob/main/resources/tutorials/en/deployment_guide.md) for details. See [Deployment Guide](https://github.com/VariantConst/OpenWebUI-Monitor/blob/main/resources/tutorials/en/deployment_guide.md) for details. See [Deployment Guide](https://github.com/VariantConst/OpenWebUI-Monitor/blob/main/resources/tutorials/en/deployment_guide.md) for details.**
+Supports one-click deployment on Vercel [![Deploy on Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FVariantConst%2FOpenWebUI-Monitor&project-name=openwebui-monitor&repository-name=openwebui-monitor&env=OPENWEBUI_DOMAIN,OPENWEBUI_API_KEY,ACCESS_TOKEN,API_KEY) and Docker deployment. 
+
+In `docker-compose.yml`, you can choose between building locally from source or using a prebuilt image:
+- **Local Build (`build: .`)**: Builds the image from your local repository files using `docker compose up -d --build`.
+- **Prebuilt Image (`image: docker.io/variantconst/openwebui-monitor:latest`)**: Pulls and runs the official prebuilt image.
+
+**See [Deployment Guide](https://github.com/VariantConst/OpenWebUI-Monitor/blob/main/resources/tutorials/en/deployment_guide.md) for details.**
 
 ## Updates
 
@@ -62,6 +68,19 @@ sudo docker compose up -d
 | Api Endpoint  | Fill in your deployed OpenWebUI Monitor backend domain or IP address accessible within the OpenWebUI container |
 | Api Key       | Fill in the `API_KEY` environment variable set in the backend deployment                                       |
 | Language      | Message display language (en/zh)                                                                               |
+
+## Billing & Paystack Integration
+
+OpenWebUI Monitor includes built-in endpoints for handling user top-ups via Paystack:
+
+1. **`POST /api/v1/billing/paystack`**
+   - **Description**: Initializes a Paystack checkout session and returns an `authorization_url`.
+   - **Authentication**: Requires `Authorization: Bearer <ACCESS_TOKEN>` header.
+   - **Request Body**: `{ "email": "user@example.com", "amount": 10.00, "userId": "user-uuid" }`
+
+2. **`POST /api/v1/billing/webhook`**
+   - **Description**: Receives payment completion notifications from Paystack and automatically increments the user's balance in PostgreSQL upon success.
+   - **Authentication**: Verified via Paystack's HMAC SHA-512 signature in the `x-paystack-signature` header using `PAYSTACK_SECRET_KEY`.
 
 ## FAQ
 
