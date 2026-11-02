@@ -1,8 +1,8 @@
 """
 title: Usage Monitor (Invisible)
-author: fl0w1nd & VariantConst
+author: fl0w1nd, VariantConst & nehemiaobati
 git_url: https://github.com/VariantConst/OpenWebUI-Monitor.git
-version: 0.3.7
+version: 0.3.9
 required_open_webui_version: 0.12.5
 requirements: httpx
 license: MIT
@@ -13,13 +13,14 @@ import logging
 import os
 import time
 from typing import Any, Callable, Dict, Optional
+
 from httpx import AsyncClient, Timeout
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-TRANSLATIONS = {
+TRANSLATIONS: Dict[str, Dict[str, str]] = {
     "en": {
         "request_failed": "Request failed: {error_msg}",
         "insufficient_balance": "Insufficient balance: Current balance `{balance:.4f}`",
@@ -45,7 +46,7 @@ class CustomException(Exception):
     pass
 
 
-def _serialize_for_json(obj: Any) -> Any:
+def _to_serializable(obj: Any) -> Any:
     if hasattr(obj, "model_dump"):
         return obj.model_dump()
     if hasattr(obj, "dict"):
@@ -53,17 +54,60 @@ def _serialize_for_json(obj: Any) -> Any:
     return str(obj)
 
 
+def serialize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return json.loads(json.dumps(payload, default=_to_serializable))
+
+
+def extract_dict(obj: Any) -> Dict[str, Any]:
+    if not obj:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    if hasattr(obj, "dict"):
+        return obj.dict()
+    try:
+        return dict(obj)
+    except Exception:
+        return {}
+
+
+def resolve_message_id(body: dict, metadata: Optional[dict] = None) -> Optional[str]:
+    if body.get("id"):
+        return str(body["id"])
+
+    messages = body.get("messages", [])
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant" and msg.get("id"):
+            return str(msg["id"])
+
+    if messages and messages[-1].get("id"):
+        return str(messages[-1]["id"])
+
+    if metadata and metadata.get("message_id"):
+        return str(metadata["message_id"])
+
+    return None
+
+
 class Filter:
     class Valves(BaseModel):
-        API_ENDPOINT: str = Field(
-            default="", description="The base URL for the API endpoint."
+        api_endpoint: str = Field(
+            default="",
+            description="The base URL for the API endpoint (e.g. http://localhost:7878)",
         )
-        API_KEY: str = Field(default="", description="API key for authentication.")
+        api_key: str = Field(
+            default="",
+            description="API key for authentication.",
+        )
         priority: int = Field(
-            default=5, description="Priority level for the filter operations."
+            default=5,
+            description="Priority level for filter operations.",
         )
         language: str = Field(
-            default="zh", description="Language for error messages (en/zh/es)."
+            default="en",
+            description="Language for error messages (en/zh/es).",
         )
 
     def __init__(self):
@@ -71,39 +115,27 @@ class Filter:
         self.name = "OpenWebUI Monitor"
         self.valves = self.Valves()
 
-    def get_text(self, key: str, **kwargs) -> str:
+    def get_text(self, key: str, **kwargs: Any) -> str:
         lang = self.valves.language if self.valves.language in TRANSLATIONS else "en"
-        text = TRANSLATIONS[lang].get(key, TRANSLATIONS["en"][key])
+        text = TRANSLATIONS[lang].get(key, TRANSLATIONS["en"].get(key, key))
         return text.format(**kwargs) if kwargs else text
 
-    def _resolve_message_id(
-        self, body: dict, metadata: Optional[dict] = None
-    ) -> Optional[str]:
-        if body.get("id"):
-            return str(body["id"])
+    @property
+    def base_url(self) -> str:
+        url = getattr(self.valves, "api_endpoint", "") or getattr(self.valves, "API_ENDPOINT", "")
+        return url.strip().rstrip("/")
 
-        messages = body.get("messages", [])
-        for msg in reversed(messages):
-            if msg.get("role") == "assistant" and msg.get("id"):
-                return str(msg["id"])
-
-        if messages and messages[-1].get("id"):
-            return str(messages[-1]["id"])
-
-        if metadata and metadata.get("message_id"):
-            return str(metadata["message_id"])
-
-        return None
+    @property
+    def api_key(self) -> str:
+        return getattr(self.valves, "api_key", "") or getattr(self.valves, "API_KEY", "")
 
     async def _post_monitor(self, endpoint: str, payload: dict) -> dict:
-        serialized_payload = json.loads(
-            json.dumps(payload, default=_serialize_for_json)
-        )
+        serialized = serialize_payload(payload)
         async with AsyncClient(timeout=Timeout(30.0)) as client:
             response = await client.post(
-                url=f"{self.valves.API_ENDPOINT}{endpoint}",
-                headers={"Authorization": f"Bearer {self.valves.API_KEY}"},
-                json=serialized_payload,
+                url=f"{self.base_url}{endpoint}",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=serialized,
             )
 
             if response.status_code == 401:
@@ -123,12 +155,14 @@ class Filter:
         __metadata__: Optional[dict] = None,
         __user__: Optional[dict] = None,
     ) -> dict:
-        user_dict = __user__ or {}
-        user_id = user_dict.get("id", "default")
+        user_dict = extract_dict(__user__)
         start_time = time.monotonic()
 
         if __metadata__ is not None:
             __metadata__["_usage_monitor_start_time"] = start_time
+
+        if not self.base_url:
+            raise CustomException("OpenWebUI Monitor api_endpoint is not configured in Valves.")
 
         try:
             response_data = await self._post_monitor(
@@ -139,12 +173,13 @@ class Filter:
             if response_data.get("unauthorized"):
                 return body
 
-            is_outage = response_data.get("balance", 0) <= 0
+            current_balance = float(response_data.get("balance", 0.0))
+            is_outage = current_balance <= 0.0 or not response_data.get("success", False)
+
             if __metadata__ is not None:
                 __metadata__["_usage_monitor_outage"] = is_outage
 
             if is_outage:
-                current_balance = response_data.get("balance", 0)
                 raise CustomException(
                     self.get_text("insufficient_balance", balance=current_balance)
                 )
@@ -152,7 +187,7 @@ class Filter:
             return body
 
         except Exception as err:
-            logger.exception(self.get_text("request_failed", error_msg=err))
+            logger.exception(self.get_text("request_failed", error_msg=str(err)))
             if isinstance(err, CustomException):
                 raise err
             raise Exception(f"error calculating usage, {err}") from err
@@ -164,11 +199,14 @@ class Filter:
         __user__: Optional[dict] = None,
         __event_emitter__: Optional[Callable] = None,
     ) -> dict:
-        user_dict = __user__ or {}
-        user_id = user_dict.get("id", "default")
+        user_dict = extract_dict(__user__)
 
-        is_outage = bool(__metadata__.get("_usage_monitor_outage", False)) if __metadata__ is not None else False
-        if is_outage:
+        is_outage = (
+            bool(__metadata__.get("_usage_monitor_outage", False))
+            if __metadata__ is not None
+            else False
+        )
+        if is_outage or not self.base_url:
             return body
 
         try:
@@ -195,7 +233,7 @@ class Filter:
             total_cost = result.get("totalCost", 0)
             new_balance = result.get("newBalance", 0)
 
-            message_id = self._resolve_message_id(body, __metadata__)
+            message_id = resolve_message_id(body, __metadata__)
 
             if message_id:
                 stats_data = {
@@ -205,9 +243,11 @@ class Filter:
                     "new_balance": new_balance,
                 }
 
-                start_time = None
-                if __metadata__ is not None:
-                    start_time = __metadata__.get("_usage_monitor_start_time")
+                start_time = (
+                    __metadata__.get("_usage_monitor_start_time")
+                    if __metadata__ is not None
+                    else None
+                )
 
                 if start_time is not None:
                     elapsed_time = time.monotonic() - start_time
@@ -237,15 +277,15 @@ class Filter:
             return body
 
         except Exception as err:
-            logger.exception(self.get_text("request_failed", error_msg=err))
+            logger.exception(self.get_text("request_failed", error_msg=str(err)))
             if __event_emitter__:
                 await __event_emitter__(
                     {
                         "type": "status",
                         "data": {
-                            "description": self.get_text("request_failed", error_msg=err),
+                            "description": self.get_text("request_failed", error_msg=str(err)),
                             "done": True,
                         },
                     }
                 )
-            raise Exception(self.get_text("request_failed", error_msg=err)) from err
+            raise Exception(self.get_text("request_failed", error_msg=str(err))) from err

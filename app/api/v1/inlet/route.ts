@@ -6,6 +6,14 @@ import { getModelInletCost } from '@/lib/utils/inlet-cost'
 export async function POST(req: Request) {
     try {
         const data = await req.json()
+
+        if (!data?.user?.id) {
+            return NextResponse.json(
+                { success: false, error: 'User identifier is required' },
+                { status: 400 }
+            )
+        }
+
         const user = await getOrCreateUser(data.user)
         const modelId = data.body?.model
 
@@ -49,10 +57,21 @@ export async function POST(req: Request) {
             const updated = await query(
                 `UPDATE users 
                  SET balance = balance - CAST($1 AS DECIMAL(16,4))
-                 WHERE id = $2 AND NOT deleted
+                 WHERE id = $2 AND NOT deleted AND balance >= CAST($1 AS DECIMAL(16,4))
                  RETURNING balance`,
                 [inletCost, user.id]
             )
+
+            if (updated.rows.length === 0) {
+                return NextResponse.json(
+                    {
+                        success: false,
+                        balance: 0,
+                        error: 'Insufficient balance for model initialization.',
+                    },
+                    { status: 402 }
+                )
+            }
 
             return NextResponse.json({
                 success: true,
