@@ -1,10 +1,15 @@
 import { NextResponse } from 'next/server'
-import { verifyApiToken } from '@/lib/auth'
 
 export async function POST(req: Request) {
-    const authError = verifyApiToken(req)
-    if (authError) {
-        return authError
+    // Authenticate with either API_KEY or ACCESS_TOKEN
+    const authHeader = req.headers.get('authorization')
+    const token = authHeader?.replace('Bearer ', '')
+    const isValid =
+        token &&
+        (token === process.env.API_KEY || token === process.env.ACCESS_TOKEN)
+
+    if (!isValid) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
     try {
@@ -20,17 +25,12 @@ export async function POST(req: Request) {
         const secretKey = process.env.PAYSTACK_SECRET_KEY
         if (!secretKey) {
             return NextResponse.json(
-                { success: false, error: 'Paystack secret key is not configured' },
+                { success: false, error: 'PAYSTACK_SECRET_KEY is not configured in .env' },
                 { status: 500 }
             )
         }
 
         const amountInKobo = Math.round(Number(amount) * 100)
-
-        const host = req.headers.get('host') || 'localhost:3000'
-        const protocol = req.headers.get('x-forwarded-proto') || 'http'
-        const fallbackUrl = `${protocol}://${host}/panel`
-        const finalCallbackUrl = callback_url || (process.env.NEXT_PUBLIC_APP_URL ? `${process.env.NEXT_PUBLIC_APP_URL}/panel` : fallbackUrl)
 
         const response = await fetch('https://api.paystack.co/transaction/initialize', {
             method: 'POST',
@@ -41,7 +41,7 @@ export async function POST(req: Request) {
             body: JSON.stringify({
                 email,
                 amount: amountInKobo,
-                callback_url: finalCallbackUrl,
+                callback_url: callback_url || `${process.env.NEXT_PUBLIC_APP_URL || ''}/api/v1/billing/webhook`,
                 metadata: {
                     user_id: userId,
                 },
