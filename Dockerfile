@@ -16,6 +16,8 @@ RUN apk add --no-cache \
 
 # 全局安装 pnpm
 RUN npm install -g pnpm --registry=https://registry.npmmirror.com
+#RUN npm_config_config= npm install -g pnpm --registry=https://npmmirror.com
+
 
 # 复制 package.json 和 pnpm-lock.yaml
 COPY package.json pnpm-lock.yaml ./
