@@ -100,13 +100,19 @@ class Filter:
                 headers={"Authorization": f"Bearer {self.valves.api_key}"},
                 json=serialized_payload,
             )
-            response.raise_for_status()
-            data = response.json()
-            if not data.get("success"):
-                error_desc = data.get("error", data)
+            try:
+                data = response.json()
+            except Exception:
+                data = {}
+
+            if response.status_code == 402 or not data.get("success", response.is_success):
+                balance = data.get("balance", 0)
+                topup_url = self.valves.topup_url or f"{self.valves.api_endpoint.rstrip('/')}/topup"
                 raise CustomException(
-                    self.get_text("request_failed", error_msg=error_desc)
+                    self.get_text("insufficient_balance", balance=balance, topup_url=topup_url)
                 )
+
+            response.raise_for_status()
             return data
 
     async def inlet(
