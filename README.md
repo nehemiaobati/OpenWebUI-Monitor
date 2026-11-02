@@ -69,6 +69,19 @@ sudo docker compose up -d
 | Api Key       | Fill in the `API_KEY` environment variable set in the backend deployment                                       |
 | Language      | Message display language (en/zh)                                                                               |
 
+## Billing & Paystack Integration
+
+OpenWebUI Monitor includes built-in endpoints for handling user top-ups via Paystack:
+
+1. **`POST /api/v1/billing/paystack`**
+   - **Description**: Initializes a Paystack checkout session and returns an `authorization_url`.
+   - **Authentication**: Requires `Authorization: Bearer <ACCESS_TOKEN>` header.
+   - **Request Body**: `{ "email": "user@example.com", "amount": 10.00, "userId": "user-uuid" }`
+
+2. **`POST /api/v1/billing/webhook`**
+   - **Description**: Receives payment completion notifications from Paystack and automatically increments the user's balance in PostgreSQL upon success.
+   - **Authentication**: Verified via Paystack's HMAC SHA-512 signature in the `x-paystack-signature` header using `PAYSTACK_SECRET_KEY`.
+
 ## FAQ
 
 ### 1. How to fill in the `OPENWEBUI_DOMAIN` environment variable?
